@@ -43,6 +43,7 @@ private final class ReadGate: @unchecked Sendable {
     var onDisconnect: (() -> Void)?
     var requestTimeoutNanoseconds: UInt64 = 15_000_000_000
     var executableOverride: String?
+    var isolatedHome: URL?
     static var executable: String? {
         let configured = UserDefaults.standard.string(forKey: "CodexExecutable")
         return ([configured].compactMap { $0 } + [
@@ -52,6 +53,9 @@ private final class ReadGate: @unchecked Sendable {
     }
     func connect(mode: Mode = .independent) async throws {
         disconnect()
+        if isolatedHome != nil {
+            guard case .independent = mode else { throw Failure.unavailable }
+        }
         let connectingGeneration = generation
         desktop = false
         switch mode {
@@ -75,6 +79,16 @@ private final class ReadGate: @unchecked Sendable {
             case .desktop: throw Failure.unavailable
             case .independent: websocket = false; child.arguments = ["app-server"]
             case .daemon(let path): websocket = true; child.arguments = ["app-server", "proxy", "--sock", path]
+            }
+            if let home = isolatedHome {
+                var environment = ProcessInfo.processInfo.environment
+                for key in ["CODEX_HOME", "CODEX_SQLITE_HOME", "CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_IDENTITY_TOKEN_FILE", "CHATGPT_BASE_URL"] {
+                    environment.removeValue(forKey: key)
+                }
+                environment["CODEX_HOME"] = home.path
+                environment["CODEX_SQLITE_HOME"] = home.path
+                child.environment = environment; child.currentDirectoryURL = home
+                child.arguments = ["-c", "cli_auth_credentials_store=\"file\""] + (child.arguments ?? [])
             }
             child.standardInput = stdinPipe; child.standardOutput = stdoutPipe; child.standardError = FileHandle.nullDevice
             try child.run()
@@ -114,6 +128,12 @@ private final class ReadGate: @unchecked Sendable {
             }
             _ = try await request("initialize", ["clientInfo": ["name": "codex_touchbar_monitor", "version": "1.0.0"], "capabilities": ["experimentalApi": true]])
             try write(["method": "initialized", "params": [:]])
+            if isolatedHome != nil {
+                let config = try await request("config/read", ["includeLayers": false])
+                guard (config["config"] as? [String: Any])?["cli_auth_credentials_store"] as? String == "file" else {
+                    throw Failure.unavailable
+                }
+            }
         } catch { disconnect(); throw error }
     }
     nonisolated private static func openSocket(_ path: String) throws -> Int32 {

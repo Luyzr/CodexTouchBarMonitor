@@ -11,6 +11,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp .build/release/CodexTouchBarMonitor "$app/Contents/MacOS/"
 strip -S "$app/Contents/MacOS/CodexTouchBarMonitor"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+swift scripts/generate_icon.swift work/AppIcon.iconset
+iconutil -c icns work/AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
 find "$app" -name '._*' -type f -delete
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"

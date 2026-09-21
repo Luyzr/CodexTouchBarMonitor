@@ -34,6 +34,7 @@ import TouchBarPrivateBridge
     let executions = ExecutionManager()
     lazy var dashboard = DashboardController(manager: executions)
     let settings = SettingsController()
+    let accounts = QuotaAccountController()
     let notifier = AttentionNotifier()
     var trays: [NSCustomTouchBarItem] = []
     var statusItem: NSStatusItem?
@@ -53,7 +54,20 @@ import TouchBarPrivateBridge
         started = true
         SettingsController.registerDefaults()
         NSApp.setActivationPolicy(.accessory)
-        let mainMenu = NSMenu(); let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        let mainMenu = NSMenu()
+        let appItem = NSMenuItem(title: "Codex TouchBar Monitor", action: nil, keyEquivalent: "")
+        let appMenu = NSMenu(title: "Codex TouchBar Monitor")
+        let preferences = NSMenuItem(title: SettingsController.text("设置…"), action: #selector(showSettings), keyEquivalent: ",")
+        preferences.target = self; appMenu.addItem(preferences)
+        settings.onLanguageChange = { [weak self, weak preferences] in
+            preferences?.title = SettingsController.text("设置…")
+            self?.accounts.languageChanged()
+            self?.statusItem?.menu?.items.first(where: { $0.action == #selector(AppDelegate.showSettings) })?.title = SettingsController.text("设置…")
+        }
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "退出 Codex Monitor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appItem.submenu = appMenu; mainMenu.addItem(appItem)
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         let editMenu = NSMenu(title: "Edit")
         for (title, selector, key) in [("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"), ("Paste", #selector(NSText.paste(_:)), "v"), ("Select All", #selector(NSText.selectAll(_:)), "a")] {
             editMenu.addItem(NSMenuItem(title: title, action: selector, keyEquivalent: key))
@@ -67,6 +81,8 @@ import TouchBarPrivateBridge
             if !self.executions.demo && !CommandLine.arguments.contains("--smoke-test") { self.notifier.reconcile(self.executions.state) }
         }
         notifier.onOpen = { [weak self] in self?.dashboard.show() }
+        settings.onAccountSettings = { [weak self] in self?.accounts.show() }
+        accounts.onChanged = { [weak self] in self?.quota.accountChanged() }
         settings.onChange = { [weak self] in
             guard let self else { return }; self.render(); self.dashboard.render()
             if !self.executions.demo { self.notifier.reconcile(self.executions.state); self.network.restart() }
@@ -185,7 +201,7 @@ import TouchBarPrivateBridge
         controls.target = self; menu.addItem(controls)
         let dashboard = NSMenuItem(title: "Task diagnostics…", action: #selector(showDashboard), keyEquivalent: "d")
         dashboard.target = self; menu.addItem(dashboard)
-        let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        let settings = NSMenuItem(title: SettingsController.text("设置…"), action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self; menu.addItem(settings)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Monitor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -229,7 +245,7 @@ import TouchBarPrivateBridge
         recoveryWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
     func applicationWillTerminate(_ notification: Notification) {
-        network.stop(); quota.stop(); executions.stop(); dashboard.stop(); notifier.stop()
+        accounts.stop(); network.stop(); quota.stop(); executions.stop(); dashboard.stop(); notifier.stop()
         for tray in trays { CTBRemove(tray) }
         trays.removeAll(); recoveryWork?.cancel()
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }

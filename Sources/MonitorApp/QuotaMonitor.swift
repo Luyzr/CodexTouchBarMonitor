@@ -11,6 +11,10 @@ import MonitorCore
     private var generation = UUID()
     private let defaults = UserDefaults.standard
     func restart() { stop(); start() }
+    func accountChanged() {
+        stop(); defaults.removeObject(forKey: "weeklyQuota")
+        value = QuotaStatus(); onUpdate?(value); start()
+    }
     func start() {
         guard task == nil else { return }
         if let data = defaults.data(forKey: "weeklyQuota"), let cached = try? JSONDecoder().decode(QuotaStatus.self, from: data) {
@@ -25,6 +29,10 @@ import MonitorCore
             while !Task.isCancelled {
                 do {
                     if !connected {
+                        client.isolatedHome = QuotaAccountStore.selectedHome
+                        if client.isolatedHome != nil {
+                            try await client.connect(); ephemeral = true
+                        } else {
                         let socket = defaults.string(forKey: "CodexDaemonSocket") ?? NSHomeDirectory() + "/.codex/app-server-control/app-server-control.sock"
                         do { try await client.connect(mode: .daemon(socket)); ephemeral = false }
                         catch {
@@ -32,8 +40,10 @@ import MonitorCore
                             try await client.connect(); ephemeral = true
                         }
                         guard session == generation && !Task.isCancelled else { return }
+                        }
+                        guard session == generation && !Task.isCancelled else { return }
                         connected = true
-                        onConnection?(ephemeral ? "Quota connected (independent fallback)" : "Quota connected (daemon)")
+                        onConnection?(client.isolatedHome != nil ? "Quota connected (linked account)" : (ephemeral ? "Quota connected (independent fallback)" : "Quota connected (daemon)"))
                     }
                     let payload = try await client.request("account/rateLimits/read")
                     guard session == generation && !Task.isCancelled else { return }

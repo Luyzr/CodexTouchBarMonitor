@@ -4,6 +4,7 @@ import SQLite3
 import MonitorCore
 
 @MainActor func runSelfChecks(mock: String) async throws {
+    try await runQuotaAccountChecks()
     var assertions = 0
     func check(_ condition: @autoclosure () -> Bool, _ label: String) {
         assertions += 1
