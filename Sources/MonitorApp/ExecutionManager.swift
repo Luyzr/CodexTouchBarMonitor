@@ -7,8 +7,10 @@ import MonitorCore
     let applicationMonitor = ApplicationMonitor()
     private let discoveryClient = CodexAppServerClient()
     private var usingDesktopIPC = false
-    private var desktopStates: [String: DesktopSnapshot] = [:]
-    private var desktopOwners: [String: String] = [:]
+    private var desktopStates: [DesktopTaskIdentity: DesktopSnapshot] = [:]
+    private var desktopOwners: [DesktopTaskIdentity: String] = [:]
+    private var desktopSubscribed = Set<DesktopTaskIdentity>()
+    private var catalogTask: Task<Void, Never>?
     private let pauseDefaults: UserDefaults?
     init(pauseDefaults: UserDefaults? = nil) { self.pauseDefaults = pauseDefaults }
     private(set) var store = ExecutionStore()
@@ -86,6 +88,16 @@ import MonitorCore
                     guard !Task.isCancelled && !self.stopped else { return }
                     self.connected = true; self.connection = self.usingDesktopIPC ? "Desktop IPC connected" : "Desktop daemon connected"; self.onChange?()
                     await self.discover()
+                    if self.usingDesktopIPC {
+                        self.catalogTask?.cancel()
+                        self.catalogTask = Task { [weak self] in
+                            while !Task.isCancelled {
+                                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                                guard !Task.isCancelled, let self, self.connected else { return }
+                                await self.discoverDesktopCatalog()
+                            }
+                        }
+                    }
                 } catch {
                     guard !Task.isCancelled && !self.stopped else { return }
                     self.lost()
@@ -98,7 +110,9 @@ import MonitorCore
     private func lost() {
         connected = false; connection = "Desktop daemon unavailable — retrying"
         for id in Array(telemetry.keys) { telemetry[id]?.disconnect() }
-        desktopStates.removeAll(); desktopOwners.removeAll()
+        for host in Set(desktopSubscribed.map { $0.serverID }) { store.disconnected(server: host) }
+        desktopStates.removeAll(); desktopOwners.removeAll(); desktopSubscribed.removeAll()
+        catalogTask?.cancel(); catalogTask = nil
         subscribed.removeAll(); clearDecisions { _ in true }; store.disconnected(server: serverID)
         onChange?()
     }
@@ -282,10 +296,10 @@ import MonitorCore
         }
         onChange?()
     }
-    func requested(_ request: RPCID, _ method: String, _ params: [String: Any]) {
+    func requested(_ request: RPCID, _ method: String, _ params: [String: Any], desktopIdentity: DesktopTaskIdentity? = nil) {
         guard let thread = params["threadId"] as? String, let turn = params["turnId"] as? String else { return }
         revisions[thread, default: 0] += 1
-        let execution = ExecutionID(serverID: serverID, threadID: thread, turnID: turn)
+        let execution = ExecutionID(serverID: desktopIdentity?.serverID ?? serverID, threadID: thread, turnID: turn)
         guard store.executions[execution]?.state.terminal != true else { return }
         let id = DecisionID(execution: execution, connection: client.generation, request: request)
         guard decisions[id] == nil else { return }
@@ -299,8 +313,8 @@ import MonitorCore
         if demo {
             clearDecisions { $0 == id }; store.transition(id.execution, to: decisions.keys.contains { $0.execution == id.execution } ? .waitingDecision : .running)
         } else if usingDesktopIPC {
-            guard connected, let owner = desktopOwners[id.execution.threadID],
-                  let snapshot = desktopStates[id.execution.threadID],
+            guard connected, let owner = desktopOwners[DesktopTaskIdentity(id.execution)],
+                  let snapshot = desktopStates[DesktopTaskIdentity(id.execution)],
                   snapshot.latestTurn?["turnId"] as? String == id.execution.turnID,
                   snapshot.decisionRequests.contains(where: { ($0["id"].flatMap { RPCID($0) }) == id.request }) == true else { throw ControlError.changed }
             let route: String
@@ -326,7 +340,7 @@ import MonitorCore
             confirmations[id] = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    _ = try await self.client.request(route, params, targetClientID: owner, version: 1)
+                    _ = try await self.client.request(route, params, targetClientID: owner, version: 1, hostID: DesktopTaskIdentity(id.execution).host)
                     try? await Task.sleep(nanoseconds: 10_000_000_000)
                 } catch {}
                 guard !Task.isCancelled, self.decisions[id] != nil else { return }
@@ -412,13 +426,26 @@ import MonitorCore
     func simulateDisconnect() { client.disconnect(); lost() }
     func wake() { guard !demo else { return }; client.disconnect(); lost(); connectWhenNeeded() }
     func stop() {
+        catalogTask?.cancel(); catalogTask = nil
         stopped = true; reconnectTask?.cancel(); reconnectTask = nil; syncTask?.cancel(); syncTask = nil
         rediscover = false; applicationMonitor.stop(); discoveryClient.disconnect(); client.disconnect(); clearDecisions { _ in true }
+    }
+    private func followDesktop(_ identity: DesktopTaskIdentity, force: Bool = false, targets: [String]? = nil) throws {
+        guard force || !desktopSubscribed.contains(identity) else { return }
+        try client.desktopBroadcast("thread-stream-following-changed", params: ["conversationId": identity.thread, "hostId": identity.host, "following": true], version: 1, targets: targets)
+        desktopSubscribed.insert(identity)
+    }
+    private func discoverDesktopCatalog() async {
+        let generation = client.generation
+        let identities = await Task.detached(priority: .utility) { (try? DesktopCatalog.desktopTasks()) ?? [] }.value
+        guard generation == client.generation, connected, !stopped, !Task.isCancelled else { return }
+        for identity in identities { try? followDesktop(identity, force: desktopOwners[identity] == nil) }
     }
     private func discoverDesktop() async {
         guard connected, !discovering else { return }
         discovering = true; defer { discovering = false; discoveryClient.disconnect() }
         let generation = client.generation
+        await discoverDesktopCatalog()
         // Some Desktop-created threads are absent from an independent app-server list.
         // Read candidate IDs only; never infer task state from the catalog.
         let localIDs = await Task.detached(priority: .utility) { try? DesktopCatalog.threadIDs() }.value ?? []
@@ -426,7 +453,7 @@ import MonitorCore
         do {
             for id in localIDs where !subscribed.contains(id) {
                 subscribed.insert(id)
-                try client.desktopBroadcast("thread-stream-following-changed", params: ["conversationId": id, "hostId": "local", "following": true], version: 1)
+                try followDesktop(DesktopTaskIdentity(host: "local", thread: id))
             }
             if CommandLine.arguments.contains("--interaction-diagnostics") { print("CATALOG candidates=\(localIDs.count)"); fflush(stdout) }
             try await discoveryClient.connect()
@@ -441,7 +468,7 @@ import MonitorCore
                 for (index, thread) in (result["data"] as? [[String: Any]] ?? []).enumerated() {
                     guard let id = thread["id"] as? String, !subscribed.contains(id) else { continue }
                     subscribed.insert(id)
-                    try client.desktopBroadcast("thread-stream-following-changed", params: ["conversationId": id, "hostId": "local", "following": true], version: 1)
+                    try followDesktop(DesktopTaskIdentity(host: "local", thread: id))
                     if index % 16 == 0 { await Task.yield() }
                     guard generation == client.generation, !Task.isCancelled, !stopped else { return }
                 }
@@ -451,25 +478,62 @@ import MonitorCore
             // A runtime test can supply a thread outside the default local catalog.
             if let id = UserDefaults.standard.string(forKey: "MonitorThreadID"), !subscribed.contains(id) {
                 subscribed.insert(id)
-                try client.desktopBroadcast("thread-stream-following-changed", params: ["conversationId": id, "hostId": "local", "following": true], version: 1)
+                try followDesktop(DesktopTaskIdentity(host: "local", thread: id))
             }
         } catch { connection = "Desktop IPC connected; discovery unavailable"; onChange?() }
     }
-    private func desktopMessage(_ message: [String: Any]) {
-        guard usingDesktopIPC, message["method"] as? String == "thread-stream-state-changed",
-              message["version"] as? Int == 11,
-              let params = message["params"] as? [String: Any], params["hostId"] as? String == "local",
-              let thread = params["conversationId"] as? String, subscribed.contains(thread), let owner = message["sourceClientId"] as? String,
-              let change = params["change"] as? [String: Any] else { return }
-        if let previous = desktopOwners[thread], previous != owner { desktopStates[thread] = nil; clearDecisions { $0.execution.threadID == thread } }
-        var snapshot = desktopStates[thread] ?? DesktopSnapshot()
-        do { try snapshot.apply(change) }
-        catch {
-            desktopStates[thread] = nil; clearDecisions { $0.execution.threadID == thread }
-            try? client.desktopBroadcast("thread-stream-following-changed", params: ["conversationId": thread, "hostId": "local", "following": true], version: 1, targets: [owner])
+    private func invalidateDesktopOwner(_ owner: String) {
+        for identity in desktopOwners.keys.filter({ desktopOwners[$0] == owner }) {
+            desktopOwners[identity] = nil; desktopStates[identity] = nil
+            clearDecisions { $0.execution.serverID == identity.serverID && $0.execution.threadID == identity.thread }
+            for value in store.sorted where value.id.serverID == identity.serverID && value.id.threadID == identity.thread && !value.state.terminal {
+                store.transition(value.id, to: .unknown)
+            }
+        }
+        onChange?()
+    }
+    func desktopMessage(_ message: [String: Any]) {
+        guard usingDesktopIPC else { return }
+        let method = message["method"] as? String ?? ""
+        let parameters = message["params"] as? [String: Any] ?? [:]
+        if method == "thread-stream-following-status-requested",
+           let host = parameters["hostId"] as? String, let thread = parameters["conversationId"] as? String {
+            let identity = DesktopTaskIdentity(host: host, thread: thread)
+            if desktopSubscribed.contains(identity) {
+                try? followDesktop(identity, force: true, targets: (message["sourceClientId"] as? String).map { [$0] })
+            }
             return
         }
-        desktopStates[thread] = snapshot; desktopOwners[thread] = owner
+        if method == "client-status-changed" {
+            if parameters["status"] as? String == "connected" {
+                let targets = parameters["isSelf"] as? Bool == true ? nil : (parameters["clientId"] as? String).map { [$0] }
+                for identity in desktopSubscribed { try? followDesktop(identity, force: true, targets: targets) }
+            } else if let owner = parameters["clientId"] as? String {
+                invalidateDesktopOwner(owner)
+            }
+            return
+        }
+        if method == "ipc-connection-reset" {
+            for owner in Set(desktopOwners.values) { invalidateDesktopOwner(owner) }
+            for identity in desktopSubscribed { try? followDesktop(identity, force: true) }
+            return
+        }
+        guard method == "thread-stream-state-changed",
+              message["version"] as? Int == 11,
+              let params = message["params"] as? [String: Any], let host = params["hostId"] as? String,
+              let thread = params["conversationId"] as? String, let owner = message["sourceClientId"] as? String,
+              let change = params["change"] as? [String: Any] else { return }
+        let identity = DesktopTaskIdentity(host: host, thread: thread)
+        guard desktopSubscribed.contains(identity) else { return }
+        if let previous = desktopOwners[identity], previous != owner { desktopStates[identity] = nil; clearDecisions { $0.execution.serverID == identity.serverID && $0.execution.threadID == thread } }
+        var snapshot = desktopStates[identity] ?? DesktopSnapshot()
+        do { try snapshot.apply(change) }
+        catch {
+            desktopStates[identity] = nil; clearDecisions { $0.execution.serverID == identity.serverID && $0.execution.threadID == thread }
+            try? client.desktopBroadcast("thread-stream-following-changed", params: ["conversationId": thread, "hostId": host, "following": true], version: 1, targets: [owner])
+            return
+        }
+        desktopStates[identity] = snapshot; desktopOwners[identity] = owner
         if CommandLine.arguments.contains("--interaction-diagnostics"), change["type"] as? String != "patches" { print("SNAPSHOT thread=\(thread) hasTurn=\(snapshot.latestTurn != nil)"); fflush(stdout) }
         if change["type"] as? String == "patches", let patches = change["patches"] as? [[String: Any]] {
             let meaningful = patches.contains { patch in
@@ -494,14 +558,14 @@ import MonitorCore
             fflush(stdout)
         }
         guard let turn = snapshot.latestTurn, let turnID = turn["turnId"] as? String else { return }
-        let id = ExecutionID(serverID: serverID, threadID: thread, turnID: turnID)
+        let id = ExecutionID(serverID: identity.serverID, threadID: thread, turnID: turnID)
         let requests = snapshot.decisionRequests
         let runtime = snapshot.state["threadRuntimeStatus"] as? [String: Any]
         let active = runtime?["type"] as? String == "active" || turn["status"] as? String == "inProgress"
         guard active || !requests.isEmpty || store.executions[id] != nil else { return }
         let status = turn["status"] as? String ?? ""
         let state: ExecutionState = snapshot.isWaitingForUser ? .waitingDecision : active ? .running : status == "completed" ? .completed : status == "failed" || status == "interrupted" ? .failed : .unknown
-        let title = snapshot.displayTitle
+        let title = snapshot.displayTitle + (host == "local" ? "" : " · " + (host.split(separator: ":").last.map(String.init) ?? host))
         if store.executions[id] == nil {
             let start = (turn["turnStartedAtMs"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
             store.upsert(MonitoredExecution(id: id, title: title, cwd: snapshot.state["cwd"] as? String, state: state, startedAt: start))
@@ -514,14 +578,18 @@ import MonitorCore
             store.transition(id, to: state)
         }
         let currentIDs = Set(requests.compactMap { $0["id"].flatMap { RPCID($0) } })
-        clearDecisions { $0.execution.threadID == thread && ($0.execution.turnID != turnID || !currentIDs.contains($0.request)) }
+        clearDecisions { $0.execution.serverID == identity.serverID && $0.execution.threadID == thread && ($0.execution.turnID != turnID || !currentIDs.contains($0.request)) }
         for request in requests {
             guard let raw = request["id"], let requestID = RPCID(raw), let method = request["method"] as? String else { continue }
             var values = request["params"] as? [String: Any] ?? [:]
             values["threadId"] = thread; values["turnId"] = turnID
-            requested(requestID, method, values)
+            requested(requestID, method, values, desktopIdentity: identity)
         }
         onChange?()
+    }
+    func prepareDesktopFixture(_ identities: [DesktopTaskIdentity]) {
+        usingDesktopIPC = true; connected = true; serverID = "desktop-ipc:local"
+        desktopSubscribed = Set(identities)
     }
     private func seedDemo() {
         connection = "DEMO — no live requests"; connected = true

@@ -160,7 +160,7 @@ private final class ReadGate: @unchecked Sendable {
         _ = fcntl(descriptor, F_SETFL, 0)
         return descriptor
     }
-    func request(_ method: String, _ params: [String: Any] = [:], targetClientID: String? = nil, version: Int = 0) async throws -> [String: Any] {
+    func request(_ method: String, _ params: [String: Any] = [:], targetClientID: String? = nil, version: Int = 0, hostID: String? = nil) async throws -> [String: Any] {
         guard input != nil, process?.isRunning != false else { throw Failure.disconnected }
         nextID += 1; let id = nextID
         try Task.checkCancellation()
@@ -177,6 +177,10 @@ private final class ReadGate: @unchecked Sendable {
                 if desktop {
                     var object: [String: Any] = ["type": "request", "requestId": String(id), "method": method, "params": params, "sourceClientId": desktopClientID, "version": version]
                     if let targetClientID { object["targetClientId"] = targetClientID }
+                    if let hostID, hostID != "local" {
+                        object["hostId"] = hostID
+                        if method.hasPrefix("thread-follower-") { object["version"] = version + 1 }
+                    }
                     try write(object)
                 } else { try write(["id": id, "method": method, "params": params]) }
             }

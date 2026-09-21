@@ -240,7 +240,9 @@ import TouchBarPrivateBridge
             if values.isEmpty { stack.addArrangedSubview(label("No monitored executions")) }
             for value in values.dropFirst(page * count).prefix(count) {
                 let icon = value.state == .waitingDecision ? "⚠" : value.state == .completed ? "🟢" : value.state == .failed ? "🔴" : value.state == .running ? "🟡" : value.state == .paused ? "⏸" : "⚪"
-                add(icon + " " + String(value.title.prefix(compact ? 12 : 60))) { [weak self] in
+                let remote = value.id.serverID.hasPrefix("desktop-ipc:remote-")
+                let origin = compact && remote ? (SettingsController.isEnglish ? "Remote · " : "远端·") : ""
+                add(icon + " " + origin + String(value.title.prefix(compact ? (remote ? 8 : 12) : 60))) { [weak self] in
                     guard let self else { return }
                     if value.state.terminal && value.state != .paused { self.manager.acknowledge(value.id) }
                     else { self.detail = value.id; self.render() }

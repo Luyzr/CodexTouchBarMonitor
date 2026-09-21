@@ -16,16 +16,24 @@ try:
     def send(obj):
         payload = json.dumps(obj).encode(); frame = struct.pack('<I', len(payload)) + payload
         for i in range(0, len(frame), 3): conn.sendall(frame[i:i+3])
+    broadcasts = []
     with conn:
         while True:
             try: obj = json.loads(read_exact(struct.unpack('<I', read_exact(4))[0]))
             except EOFError: break
+            if obj.get('type') == 'broadcast':
+                broadcasts.append(obj)
+                continue
             if obj.get('type') != 'request': continue
             method = obj['method']
             if method == 'initialize': result = {'clientId':'fixture-monitor'}
+            elif method == 'fixture/broadcasts':
+                result = {'messages': broadcasts}
+                broadcasts = []
             elif method == 'thread-follower-submit-user-input':
                 assert obj['sourceClientId'] == 'fixture-monitor'
-                assert obj['targetClientId'] == 'fixture-owner' and obj['version'] == 1
+                assert obj['targetClientId'] == 'fixture-owner'
+                assert obj['version'] == (2 if obj.get('hostId') == 'remote-ssh-discovered:fixture' else 1)
                 assert obj['params']['conversationId'] == 'fixture-thread'
                 assert obj['params']['requestId'] == 'input-1'
                 assert obj['params']['response'] == {'answers': {'branch': {'answers': ['功能分支🚀']}}}

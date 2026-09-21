@@ -25,6 +25,42 @@ import MonitorCore
     check(catalogIDs == ["desktop-created", "older"], "discover unarchived candidate IDs in recency order")
     let catalogAfter = try Data(contentsOf: URL(fileURLWithPath: fixtureDBPath))
     check(catalogAfter == catalogBefore, "catalog discovery does not mutate the database")
+    let desktopDBDir = catalogHome.appendingPathComponent("sqlite")
+    try FileManager.default.createDirectory(at: desktopDBDir, withIntermediateDirectories: true)
+    var desktopDB: OpaquePointer?
+    check(sqlite3_open(desktopDBDir.appendingPathComponent("codex-dev.db").path, &desktopDB) == SQLITE_OK, "open desktop host catalog fixture")
+    check(sqlite3_exec(desktopDB, "CREATE TABLE local_thread_catalog(host_id TEXT, thread_id TEXT, missing_candidate INTEGER, source_updated_at REAL); INSERT INTO local_thread_catalog VALUES('local','shared',0,3),('remote-ssh-discovered:fixture','shared',0,2),('chatgpt:fixture','chat',0,1),('remote-ssh-discovered:fixture','removed',1,0);", nil, nil, nil) == SQLITE_OK, "seed multi-host catalog")
+    sqlite3_close(desktopDB)
+    let identities = try DesktopCatalog.desktopTasks(home: catalogHome)
+    check(identities.count == 2 && Set(identities.map { $0.host }).count == 2, "host catalog excludes chats and removed candidates")
+    let remoteManager = ExecutionManager()
+    remoteManager.prepareDesktopFixture(identities)
+    func desktopEvent(host: String, owner: String = "owner", status: String = "inProgress", requests: [[String: Any]] = []) -> [String: Any] {
+        ["method": "thread-stream-state-changed", "version": 11, "sourceClientId": owner,
+         "params": ["hostId": host, "conversationId": "shared", "change": ["type": "snapshot", "revision": 1,
+          "conversationState": ["title": "Fixture task", "requests": requests,
+           "threadRuntimeStatus": ["type": status == "inProgress" ? "active" : "idle"],
+           "turnHistory": ["history": ["entitiesByKey": ["turn": ["turnId": "turn", "turnStartedAtMs": 1.0, "status": status]]]]]]]]
+    }
+    let remoteHost = "remote-ssh-discovered:fixture"
+    let request: [String: Any] = ["id": "q", "method": "item/tool/requestUserInput", "params": ["questions": [["id": "q", "question": "Fixture?", "options": [["label": "Yes"]]]]]]
+    remoteManager.desktopMessage(desktopEvent(host: "local", requests: [request]))
+    remoteManager.desktopMessage(desktopEvent(host: remoteHost, owner: "remote-owner", requests: [request]))
+    check(remoteManager.store.sorted.count == 2 && remoteManager.queue.count == 2, "same thread and request IDs remain separate across hosts")
+    check(remoteManager.store.sorted.allSatisfy { $0.state == .waitingDecision }, "remote and local questions both show warning state")
+    remoteManager.desktopMessage(["method": "client-status-changed", "params": ["clientId": "remote-owner", "status": "disconnected"]])
+    check(remoteManager.queue.count == 1 && remoteManager.store.sorted.first { $0.id.serverID == "desktop-ipc:" + remoteHost }?.state == .unknown, "remote owner disconnect clears only remote decisions")
+    remoteManager.desktopMessage(desktopEvent(host: remoteHost, owner: "reconnected-owner", requests: [request]))
+    check(remoteManager.queue.count == 2, "new remote owner snapshot restores pending decision")
+    remoteManager.desktopMessage(desktopEvent(host: remoteHost, status: "completed"))
+    check(remoteManager.queue.count == 1 && remoteManager.queue.first?.id.execution.serverID == "desktop-ipc:local", "remote completion cannot clear local decision")
+    check(remoteManager.store.sorted.first { $0.id.serverID == "desktop-ipc:" + remoteHost }?.state == .completed, "remote completion updates correct host")
+    remoteManager.desktopMessage(desktopEvent(host: "remote-ssh-discovered:unsubscribed"))
+    check(remoteManager.store.sorted.count == 2, "unsolicited host state ignored")
+    remoteManager.desktopMessage(desktopEvent(host: remoteHost, owner: "new-owner", status: "completed"))
+    check(remoteManager.queue.count == 1, "remote owner change preserves local request")
+    remoteManager.simulateDisconnect()
+    check(remoteManager.queue.isEmpty && remoteManager.store.sorted.first { $0.id.serverID == "desktop-ipc:local" }?.state == .unknown, "disconnect invalidates all host decisions")
     let tapButton = CompactTrayButton(frame: .zero)
     var singles = 0; var doubles = 0
     tapButton.onSingleTap = { singles += 1 }; tapButton.onDoubleTap = { doubles += 1 }
@@ -41,14 +77,43 @@ import MonitorCore
     try fixture.run()
     defer { if fixture.isRunning { fixture.terminate() }; try? FileManager.default.removeItem(atPath: fixturePath) }
     for _ in 0..<100 where !FileManager.default.fileExists(atPath: fixturePath) { try await Task.sleep(nanoseconds: 10_000_000) }
-    let desktopClient = CodexAppServerClient()
+    let desktopClient = remoteManager.client
     try await desktopClient.connect(mode: .desktop(fixturePath))
+    remoteManager.prepareDesktopFixture(identities)
+    remoteManager.desktopMessage(["method": "thread-stream-following-status-requested", "sourceClientId": "restored-owner", "params": ["hostId": remoteHost, "conversationId": "shared"]])
+    let requestedReplay = try await desktopClient.request("fixture/broadcasts", [:])
+    let requestedMessages = requestedReplay["messages"] as? [[String: Any]] ?? []
+    check(requestedMessages.count == 1
+          && requestedMessages.first?["targetClientIds"] as? [String] == ["restored-owner"]
+          && (requestedMessages.first?["params"] as? [String: Any])?["hostId"] as? String == remoteHost
+          && (requestedMessages.first?["params"] as? [String: Any])?["following"] as? Bool == true,
+          "owner status request resends targeted remote subscription on the wire")
+    remoteManager.desktopMessage(["method": "client-status-changed", "params": ["clientId": "restored-owner", "status": "connected"]])
+    let connectedReplay = try await desktopClient.request("fixture/broadcasts", [:])
+    let connectedMessages = connectedReplay["messages"] as? [[String: Any]] ?? []
+    check(connectedMessages.count == 2
+          && connectedMessages.allSatisfy { $0["targetClientIds"] as? [String] == ["restored-owner"] }
+          && Set(connectedMessages.compactMap { ($0["params"] as? [String: Any])?["hostId"] as? String }) == Set(["local", remoteHost]),
+          "reconnected owner receives subscriptions for both hosts")
+    remoteManager.desktopMessage(["method": "thread-stream-following-status-requested", "sourceClientId": "other-owner", "params": ["hostId": "remote-ssh-discovered:unknown", "conversationId": "shared"]])
+    let unsolicitedReplay = try await desktopClient.request("fixture/broadcasts", [:])
+    check((unsolicitedReplay["messages"] as? [[String: Any]])?.isEmpty == true, "unknown host cannot solicit a subscription")
+    remoteManager.desktopMessage(["method": "ipc-connection-reset"])
+    let resetReplay = try await desktopClient.request("fixture/broadcasts", [:])
+    let resetMessages = resetReplay["messages"] as? [[String: Any]] ?? []
+    check(resetMessages.count == 2 && resetMessages.allSatisfy { $0["targetClientIds"] == nil },
+          "IPC reset rebroadcasts all desired subscriptions")
+
     let desktopReply = try await desktopClient.request("thread-follower-submit-user-input", ["conversationId": "fixture-thread", "requestId": "input-1", "response": ["answers": ["branch": ["answers": ["功能分支🚀"]]]]], targetClientID: "fixture-owner", version: 1)
     check(desktopReply["ok"] as? Bool == true, "desktop fragmented frames and exact targeted Unicode reply")
     let asyncTransport = try await desktopClient.request("thread-follower-steer-turn",
         ["conversationId": "fixture-thread", "input": [["type": "text", "text": "<send_user_message_question_reply>fixture</send_user_message_question_reply>"]],
          "restoreMessage": ["context": ["turnTrigger": "send_user_message_async_question"]]], targetClientID: "fixture-owner", version: 1)
     check(asyncTransport["ok"] as? Bool == true, "async reply uses targeted steering route")
+    let remoteTransport = try await desktopClient.request("thread-follower-submit-user-input",
+        ["conversationId": "fixture-thread", "requestId": "input-1", "response": ["answers": ["branch": ["answers": ["功能分支🚀"]]]]],
+        targetClientID: "fixture-owner", version: 1, hostID: "remote-ssh-discovered:fixture")
+    check(remoteTransport["ok"] as? Bool == true, "remote reply uses explicit envelope host and version two")
     let beforeDesktopDisconnect = desktopClient.generation
     desktopClient.disconnect()
     check(desktopClient.generation != beforeDesktopDisconnect, "desktop disconnect invalidates request identity")
