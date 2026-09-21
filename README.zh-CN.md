@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/app-icon.png" alt="Codex TouchBar Monitor app icon" width="128" height="128">
+</p>
+
 # Codex TouchBar Monitor
 
 [English](README.md) | 简体中文
