@@ -2,6 +2,9 @@
 
 原生 Swift/AppKit macOS 后台 App，在 Touch Bar 显示网络时延、Codex 周剩余额度、任务状态和待回复问题。
 
+这是独立社区项目，与 OpenAI 或 Apple 无隶属、赞助或官方支持关系。
+当前版本：[v1.1.4（预发布）](https://github.com/Luyzr/CodexTouchBarMonitor/releases/tag/v1.1.4)。
+
 ## 安装与打开
 
 1. 在 [Releases](https://github.com/Luyzr/CodexTouchBarMonitor/releases) 下载 ZIP，解压后把 **CodexTouchBarMonitor.app** 拖到“应用程序”。
@@ -9,7 +12,7 @@
 3. 再次从“应用程序”打开，会重新显示状态窗口。
 
 要求 macOS 13 或更新版本、Apple Silicon。实体 Touch Bar 功能需要配备 Touch Bar 的 Mac；其他机器可使用桌面状态窗口。
-当前发行包使用 ad-hoc 签名，尚未 Developer ID 签名或 Apple 公证。下载后若被 macOS 拦截，可在确认来源后使用系统“隐私与安全性”中的“仍要打开”；不需要关闭系统安全保护。私有仓库的下载需要访问权限。
+当前发行包使用 ad-hoc 签名，尚未 Developer ID 签名或 Apple 公证。下载后若被 macOS 拦截，可在确认来源后使用系统“隐私与安全性”中的“仍要打开”；不需要关闭系统安全保护。
 
 ## Touch Bar 操作
 
@@ -62,3 +65,20 @@ python3 scripts/prepare_release.py
 publish_release.sh 可通过已登录的 GitHub CLI 创建草稿；发布前请核对版本、标签、源码和产物。
 
 菜单栏 Settings 可设置刷新间隔、显示开关、任务数量、通知和登录启动。高级配置可指定 Codex 可执行程序、bundle ID 和服务 socket。没有网络/额度数据时先检查 Codex 登录与网络连接。
+
+## 校验下载
+
+在同一目录下载 ZIP 和 `SHA256SUMS` 后运行：
+
+```sh
+shasum -a 256 -c SHA256SUMS
+```
+
+## 反馈与贡献
+
+请通过 [Issues](https://github.com/Luyzr/CodexTouchBarMonitor/issues) 提交脱敏后的复现步骤。
+开发与提交约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全反馈见 [SECURITY.md](SECURITY.md)。
+
+## 许可证
+
+尚未指定开源许可证。仓库可见性与复用、再分发授权是两件事；选择许可证后会在根目录添加 `LICENSE`。
