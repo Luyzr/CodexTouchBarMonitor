@@ -1,51 +1,61 @@
 # Codex TouchBar Monitor
 
-原生 Swift/AppKit macOS 后台 App，在 Touch Bar 显示网络时延、Codex 周剩余额度、任务状态和待回复问题。
+English | [简体中文](README.zh-CN.md)
 
-这是独立社区项目，与 OpenAI 或 Apple 无隶属、赞助或官方支持关系。
-当前版本：[v1.1.4（预发布）](https://github.com/Luyzr/CodexTouchBarMonitor/releases/tag/v1.1.4)。
+A native Swift/AppKit background app for macOS that displays network latency, remaining weekly Codex quota, task activity, and questions awaiting a reply on the Touch Bar.
 
-## 安装与打开
+An independent community project, not affiliated with, sponsored by, or officially supported by OpenAI or Apple.
 
-1. 在 [Releases](https://github.com/Luyzr/CodexTouchBarMonitor/releases) 下载 ZIP，解压后把 **CodexTouchBarMonitor.app** 拖到“应用程序”。
-2. 双击 App 打开状态窗口；关闭窗口后仍在后台运行。它不显示 Dock 图标，菜单栏 **CTB** 提供任务、设置和退出入口。
-3. 再次从“应用程序”打开，会重新显示状态窗口。
+Current version: [v1.1.4 (prerelease)](https://github.com/Luyzr/CodexTouchBarMonitor/releases/tag/v1.1.4).
 
-要求 macOS 13 或更新版本、Apple Silicon。实体 Touch Bar 功能需要配备 Touch Bar 的 Mac；其他机器可使用桌面状态窗口。
-当前发行包使用 ad-hoc 签名，尚未 Developer ID 签名或 Apple 公证。下载后若被 macOS 拦截，可在确认来源后使用系统“隐私与安全性”中的“仍要打开”；不需要关闭系统安全保护。
+## Requirements and installation
 
-## Touch Bar 操作
+- macOS 13 or later, Apple Silicon.
+- A Mac with a physical Touch Bar for Touch Bar controls. Other Macs can use the desktop status window.
+- Codex Desktop for task monitoring; remote tasks require an active Desktop connection to the remote device.
 
-- 右侧常驻块：上行网络时延，下行 Codex 图标和周剩余额度。Codex 未运行时仍保留此块；不可用或过期数据有占位/失效提示。
-- 单击常驻块：启动或激活 Codex。
-- 双击常驻块：打开任务区；系统 **X** 返回前台应用原生控件，再次双击可以重新进入。
-- 黄色圆圈表示执行中，闪烁警示三角表示有待处理问题，绿色表示完成。
-- 问题中的预设选项可直接选择。自由文本回复通过 **Open Codex** 完成，Touch Bar 文本输入/中文 IME 已暂停。
-- 任务区暂时替换前台应用的 Touch Bar 控件，同时保留常驻块；不切换前台应用。
+1. Download `CodexTouchBarMonitor-arm64.zip` and `SHA256SUMS` from [Releases](https://github.com/Luyzr/CodexTouchBarMonitor/releases).
+2. Verify the download in the directory containing both files:
 
-## 额度账号与设置语言
+   ```sh
+   shasum -a 256 -c SHA256SUMS
+   ```
 
-在菜单栏 CTB → 设置中，可选择中文或 English；点击“额度账号…”可为 Touch Bar 单独绑定或更换账号。
+3. Unzip and move **CodexTouchBarMonitor.app** to Applications, then open it.
+4. Closing the status window keeps the app running. Use the **CTB** menu bar item for tasks, settings, and quitting. There is no Dock icon; opening the app again restores the window.
 
-- 点击“绑定 / 更换账号…”后，在 OpenAI 登录页选择账号。通过账号和周额度检查后自动切换显示。
-- 此操作只改变额度来源，不退出或切换 Codex Desktop，也不改变任务监控。
-- 取消、失败或关闭登录窗口时继续使用原额度来源；“恢复使用 Codex 当前账号”可解除独立绑定。
-- 登录凭据保存在本 App 独立的应用支持目录中，不会复制或覆盖 Codex 的登录文件；不写入日志、仓库或发布包。
-- 浏览器可能保留已有登录，请核对所选账号。账号必须提供可读取的 ChatGPT 周额度。
+Current packages are ad-hoc signed, without a Developer ID signature or Apple notarization. If macOS blocks a download you trust, use **Open Anyway** in Privacy & Security. Do not disable system security protections.
 
-## 实现与边界
+## Touch Bar controls
 
-网络和额度独立于任务监控运行。任务使用本机 Codex Desktop IPC 事件，并以只读任务目录补充发现，支持 Desktop 已连接的远端设备；远端标题附带设备标识。新任务在启动、切出 Codex、手动刷新及后台每 30 秒的目录补查中发现，状态通过事件更新。
-支持同步输入/审批请求及异步提问消息；回复按任务、当前轮次、请求和连接身份核对，未确认的回复禁止盲目重发。
-使用 macOS 私有 Touch Bar 接口和 Codex Desktop 内部协议，系统或 Codex 更新可能影响兼容性。
-远端任务执行中与完成事件已实测；远端真实审批完整回路、设备断开重连及长期休眠恢复尚未完成专项验收。历史设计和测试记录见 docs，当前功能以本 README 和版本说明为准。
+- The persistent right-side tile shows network latency above the Codex icon and remaining weekly quota. It stays available when Codex is closed and marks unavailable or stale data.
+- Single-tap the tile to open or activate Codex.
+- Double-tap to open the task area. The system **X** restores the foreground app's native controls; double-tap again to reopen the task area.
+- A yellow circle indicates running work, a flashing yellow triangle with a black exclamation mark indicates a pending question, and green indicates completion.
+- Choose predefined answers directly. Use **Open Codex** for free-text replies; Touch Bar text entry and Chinese IME support are currently paused.
+- The task area temporarily replaces the foreground app's Touch Bar controls without switching the foreground app.
 
-## 构建与测试
+## Quota account and settings
 
-所有构建操作在指定的构建机器上执行，测试用 Mac 只运行已打包 App。
-在构建机器克隆仓库后，创建不纳入版本控制的配置：
+Open **CTB → Settings** to choose English or Chinese, configure refresh intervals, display options, task count, notifications, and launch at login. Advanced settings include the Codex executable, bundle ID, and service socket.
 
-~~~sh
+Use **Quota Account…** to link a separate account for the quota display. Complete the OpenAI sign-in flow and verify the selected account, especially if the browser retains an existing login. The account must expose readable ChatGPT weekly quota.
+
+This changes only the quota source. It does not sign out of Codex Desktop, switch its account, or change task monitoring. Cancellation or failure preserves the previous source; restoring the current Codex account removes the independent binding. Credentials live in this app's separate local application-support directory and are not copied over Codex's login files or written to logs, the repository, or release packages.
+
+## How it works and known limits
+
+Network and quota monitoring run independently of task monitoring. Tasks use local Codex Desktop IPC events, supplemented by read-only catalog discovery, including remote devices already connected to Desktop. Remote task titles include a device identifier. Discovery runs at launch, when leaving Codex, on manual refresh, and every 30 seconds; events update task state.
+
+The app supports synchronous input/approval requests and asynchronous questions. Replies are checked against task, turn, request, and connection identity. Unconfirmed replies are not blindly retried.
+
+Compatibility depends on private macOS Touch Bar APIs and internal Codex Desktop protocols, which can change. Remote running/completed events have been verified; a complete real remote approval flow, device reconnection, and prolonged sleep recovery still require dedicated acceptance testing. Historical designs and validation records are in [docs](docs); this README and release notes describe the current behavior.
+
+## Build and test
+
+Use macOS with Xcode Command Line Tools supporting Swift 5.9 or later. Build on your designated build machine; testing Macs may run the packaged app. Create a local, untracked build-host configuration after cloning:
+
+```sh
 mkdir -p work
 python3 - <<'CONFIG'
 import json, pathlib, socket
@@ -57,28 +67,18 @@ CONFIG
 bash scripts/test.sh
 bash scripts/build.sh
 python3 scripts/prepare_release.py
-~~~
-
-构建脚本核对配置中的主机和仓库目录。源码与发行包不包含开发者机器的路径配置。
-自动测试使用虚构任务；原生 UI 测试需要 macOS 图形登录会话。额外的只读服务连接检查使用 test.sh --live。
-产物位于 dist：App、ZIP、SHA256SUMS 和 Homebrew Cask。sign_release.sh 可使用已有 Developer ID 和公证配置；凭据不存入仓库。
-publish_release.sh 可通过已登录的 GitHub CLI 创建草稿；发布前请核对版本、标签、源码和产物。
-
-菜单栏 Settings 可设置刷新间隔、显示开关、任务数量、通知和登录启动。高级配置可指定 Codex 可执行程序、bundle ID 和服务 socket。没有网络/额度数据时先检查 Codex 登录与网络连接。
-
-## 校验下载
-
-在同一目录下载 ZIP 和 `SHA256SUMS` 后运行：
-
-```sh
-shasum -a 256 -c SHA256SUMS
 ```
 
-## 反馈与贡献
+Build scripts validate the configured host and repository directory. Developer-specific paths are not included in source or release packages. Automated tests use fictional tasks and do not require a physical Touch Bar. Native UI checks require a graphical macOS login session. `bash scripts/test.sh --live` additionally performs read-only service connection checks.
 
-请通过 [Issues](https://github.com/Luyzr/CodexTouchBarMonitor/issues) 提交脱敏后的复现步骤。
-开发与提交约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全反馈见 [SECURITY.md](SECURITY.md)。
+Artifacts are written to `dist`: the app, ZIP, `SHA256SUMS`, and a Homebrew Cask. `scripts/sign_release.sh` can use an existing Developer ID and notarization configuration; keep credentials outside the repository. `scripts/publish_release.sh` creates a draft through an authenticated GitHub CLI. Check the version, tag, source, and artifacts before publishing.
 
-## 许可证
+If latency or quota data is missing, first check connectivity and the Codex login state.
 
-尚未指定开源许可证。仓库可见性与复用、再分发授权是两件事；选择许可证后会在根目录添加 `LICENSE`。
+## Contributing and security
+
+Report reproducible, sanitized issues through [Issues](https://github.com/Luyzr/CodexTouchBarMonitor/issues). See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance and [SECURITY.md](SECURITY.md) for sensitive reports. Never attach credentials, real task contents, or raw IPC logs to a public issue.
+
+## License
+
+[MIT](LICENSE). You may use, modify, and redistribute this project's own code and documentation, including commercially, while retaining the copyright and license notices. This grant also covers this project's historical releases distributed here. Third-party software and trademarks remain subject to their owners' terms.
